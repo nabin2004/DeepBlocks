@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useCallback, useRef } from 'react'
-import { ReactFlow, applyNodeChanges, applyEdgeChanges, addEdge, Background, BackgroundVariant } from '@xyflow/react'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { ReactFlow, applyNodeChanges, applyEdgeChanges, addEdge, Background, BackgroundVariant, Handle, Position, NodeProps, EdgeProps, BaseEdge, getSmoothStepPath, EdgeLabelRenderer, MarkerType, useReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
 import { AppSidebar } from "@/components/app-sidebar"
@@ -15,17 +15,695 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { PanelRightClose, PanelRightOpen, CheckCircle, AlertCircle, Layers, Brain, Download, PlayCircle, Trash2, MousePointerClick } from "lucide-react"
+import { PanelRightClose, PanelRightOpen, CheckCircle, AlertCircle, Layers, Brain, Download, PlayCircle, Trash2, MousePointerClick, ArrowRight, Circle, Square, Hexagon, Triangle, Octagon, Diamond, Box, Copy, Settings, MoreVertical, Sparkles, Zap, Activity, RotateCw, Eye, EyeOff, Link, Unlink, ChevronRight } from "lucide-react"
 
+// Custom Sparkling Edge Component for horizontal layout
+const SparklingEdge = ({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style = {},
+  markerEnd,
+  selected,
+}: EdgeProps) => {
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  })
+
+  const [sparkles, setSparkles] = useState<Array<{ id: number; progress: number }>>([])
+  const animationRef = useRef<number>()
+
+  useEffect(() => {
+    if (selected) {
+      const interval = setInterval(() => {
+        setSparkles(prev => [
+          ...prev.slice(-3),
+          { id: Date.now(), progress: 0 }
+        ])
+      }, 800)
+
+      return () => clearInterval(interval)
+    }
+  }, [selected])
+
+  useEffect(() => {
+    const animate = () => {
+      setSparkles(prev =>
+        prev.map(sparkle => ({
+          ...sparkle,
+          progress: Math.min(sparkle.progress + 0.02, 1)
+        })).filter(sparkle => sparkle.progress < 1)
+      )
+      animationRef.current = requestAnimationFrame(animate)
+    }
+
+    if (selected && sparkles.length > 0) {
+      animationRef.current = requestAnimationFrame(animate)
+    }
+
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current)
+      }
+    }
+  }, [selected, sparkles.length])
+
+  const getGradientId = () => `gradient-${id}`
+
+  return (
+    <>
+      <defs>
+        <linearGradient id={getGradientId()} x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.8" />
+          <stop offset="50%" stopColor="#8b5cf6" stopOpacity="0.9" />
+          <stop offset="100%" stopColor="#ec4899" stopOpacity="0.8" />
+        </linearGradient>
+        <marker
+          id={`arrow-${id}`}
+          markerWidth="12"
+          markerHeight="12"
+          refX="9"
+          refY="6"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path
+            d="M2,2 L2,10 L10,6 L2,2"
+            fill="url(#gradient-arrow)"
+            stroke="none"
+          />
+        </marker>
+      </defs>
+      <BaseEdge
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={{
+          ...style,
+          stroke: `url(#${getGradientId()})`,
+          strokeWidth: selected ? 4 : 3,
+          strokeLinecap: 'round',
+          filter: selected ? 'drop-shadow(0 0 8px rgba(139, 92, 246, 0.6))' : 'none',
+          animation: selected ? 'pulse 2s ease-in-out infinite' : 'none',
+        }}
+      />
+      
+      {/* Animated sparkles */}
+      {sparkles.map((sparkle) => {
+        const point = getPointAtLength(edgePath, sparkle.progress)
+        return (
+          <circle
+            key={sparkle.id}
+            cx={point.x}
+            cy={point.y}
+            r="4"
+            fill="url(#gradient-arrow)"
+            style={{
+              filter: 'drop-shadow(0 0 6px rgba(255, 255, 255, 0.8))',
+              opacity: 1 - sparkle.progress,
+            }}
+          />
+        )
+      })}
+
+      <style>
+        {`
+          @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+          }
+          @keyframes shimmer {
+            0% { background-position: -200% center; }
+            100% { background-position: 200% center; }
+          }
+        `}
+      </style>
+    </>
+  )
+}
+
+// Helper function to get point along path
+const getPointAtLength = (path: string, progress: number) => {
+  const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+  pathEl.setAttribute('d', path)
+  const length = pathEl.getTotalLength()
+  const point = pathEl.getPointAtLength(progress * length)
+  return point
+}
+
+// Node Toolkit Component
+const NodeToolkit = ({ nodeId, position, onDelete, onDuplicate, onSettings }: {
+  nodeId: string
+  position: { x: number; y: number }
+  onDelete: () => void
+  onDuplicate: () => void
+  onSettings: () => void
+}) => {
+  return (
+    <div
+      className="absolute z-50 flex items-center gap-1 p-1.5 bg-background/90 backdrop-blur-sm border border-border rounded-lg shadow-lg"
+      style={{
+        left: position.x + 180,
+        top: position.y + 10,
+      }}
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7 p-0 hover:bg-blue-100 dark:hover:bg-blue-900/20"
+        onClick={onDuplicate}
+        title="Duplicate"
+      >
+        <Copy className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7 p-0 hover:bg-purple-100 dark:hover:bg-purple-900/20"
+        onClick={onSettings}
+        title="Settings"
+      >
+        <Settings className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7 p-0 hover:bg-destructive/10 text-destructive hover:text-destructive"
+        onClick={onDelete}
+        title="Delete"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  )
+}
+
+// Enhanced Custom Node Components with horizontal layout
+const createNodeComponent = (WrappedComponent: React.ComponentType<NodeProps>) => {
+  return (props: NodeProps) => {
+    const [showToolkit, setShowToolkit] = useState(false)
+    const { setNodes, setEdges } = useReactFlow()
+
+    const handleDelete = useCallback(() => {
+      setNodes((nds) => nds.filter((n) => n.id !== props.id))
+      setEdges((eds) => eds.filter((e) => e.source !== props.id && e.target !== props.id))
+    }, [props.id, setNodes, setEdges])
+
+    const handleDuplicate = useCallback(() => {
+      const newNode = {
+        ...props,
+        id: `${props.id}-copy-${Date.now()}`,
+        position: {
+          x: props.xPos + 220,
+          y: props.yPos,
+        },
+        data: {
+          ...props.data,
+          layerName: `${props.data.layerName}_copy`,
+        },
+      }
+      setNodes((nds) => [...nds, newNode])
+    }, [props, setNodes])
+
+    const handleSettings = useCallback(() => {
+      console.log('Settings for node:', props.id)
+    }, [props.id])
+
+    return (
+      <div 
+        className="relative"
+        onMouseEnter={() => setShowToolkit(true)}
+        onMouseLeave={() => setShowToolkit(false)}
+      >
+        <WrappedComponent {...props} />
+        {showToolkit && (
+          <NodeToolkit
+            nodeId={props.id}
+            position={{ x: 0, y: 0 }}
+            onDelete={handleDelete}
+            onDuplicate={handleDuplicate}
+            onSettings={handleSettings}
+          />
+        )}
+      </div>
+    )
+  }
+}
+
+// Layer Visualization Component
+const LayerVisualization = ({ units, type, activation }: { units: number, type: string, activation: string }) => {
+  const [isExpanded, setIsExpanded] = useState(false)
+  
+  const renderNeurons = () => {
+    if (units <= 32) {
+      return Array.from({ length: units }).map((_, i) => (
+        <div key={i} className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" style={{ animationDelay: `${i * 50}ms` }} />
+      ))
+    } else {
+      // For 768 units or more, show concatenated format
+      const chunkSize = Math.ceil(units / 12)
+      return (
+        <div className="flex flex-col gap-1">
+          {Array.from({ length: 12 }).map((_, row) => (
+            <div key={row} className="flex gap-0.5">
+              {Array.from({ length: Math.min(chunkSize, units - row * chunkSize) }).map((_, col) => (
+                <div 
+                  key={col} 
+                  className="h-1.5 w-1.5 rounded-full bg-gradient-to-br from-blue-400 to-purple-400"
+                  style={{ opacity: 0.3 + (col / chunkSize) * 0.7 }}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      )
+    }
+  }
+
+  const getActivationColor = (activation: string) => {
+    switch(activation) {
+      case 'relu': return 'from-orange-400 to-red-500'
+      case 'sigmoid': return 'from-pink-400 to-rose-500'
+      case 'tanh': return 'from-amber-400 to-yellow-500'
+      case 'softmax': return 'from-purple-400 to-indigo-500'
+      default: return 'from-blue-400 to-cyan-500'
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-medium text-muted-foreground">Layer Visualization:</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="h-5 text-xs px-2"
+        >
+          {isExpanded ? 'Collapse' : 'Expand'}
+        </Button>
+      </div>
+      
+      <div className="relative">
+        {/* Layer container */}
+        <div className={`relative p-2 rounded-lg border border-border bg-gradient-to-r ${getActivationColor(activation)}/10 transition-all duration-300 ${
+          isExpanded ? 'min-h-[120px]' : 'min-h-[60px]'
+        }`}>
+          {/* Neurons grid */}
+          <div className={`grid ${units <= 32 ? 'grid-cols-8 gap-1' : 'grid-cols-1'} justify-items-center transition-all duration-300 ${
+            isExpanded ? 'scale-100 opacity-100' : 'scale-90 opacity-80'
+          }`}>
+            {renderNeurons()}
+          </div>
+          
+          {/* Overlay info */}
+          <div className="absolute bottom-1 left-1 right-1 flex justify-between items-center text-xs">
+            <div className="flex items-center gap-1 px-2 py-0.5 bg-background/80 rounded">
+              <div className="h-2 w-2 rounded-full bg-gradient-to-r from-blue-400 to-purple-400" />
+              <span className="font-mono">{units} neurons</span>
+            </div>
+            <div className="px-2 py-0.5 bg-background/80 rounded">
+              <span className="text-muted-foreground">{activation}</span>
+            </div>
+          </div>
+        </div>
+        
+        {/* Connection dots */}
+        {units > 32 && (
+          <div className="absolute -right-4 top-1/2 transform -translate-y-1/2 flex flex-col gap-1">
+            <div className="flex gap-0.5">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-1 w-1 rounded-full bg-blue-400/60" />
+              ))}
+            </div>
+            <ChevronRight className="h-4 w-4 text-blue-400" />
+            <div className="flex gap-0.5">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-1 w-1 rounded-full bg-blue-400/60" />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Original Node Components with horizontal handles
+const InputNodeBase = ({ data }: NodeProps) => {
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-xl bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-300 dark:from-green-950/30 dark:to-emerald-950/30 dark:border-green-700 min-w-[180px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-green-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-green-500 to-emerald-500 rounded-md group-hover:scale-110 transition-transform">
+          <Square className="h-3 w-3 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-green-800 dark:text-green-300">{data.label}</div>
+          <div className="text-xs text-green-600 dark:text-green-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="space-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Units:</span>
+          <span className="font-medium text-green-700 dark:text-green-300">{data.units}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Activation:</span>
+          <span className="font-medium text-green-700 dark:text-green-300">{data.activation}</span>
+        </div>
+      </div>
+      
+      {/* Layer Visualization */}
+      <LayerVisualization 
+        units={data.units || 768} 
+        type={data.type} 
+        activation={data.activation} 
+      />
+      
+      <Handle type="source" position={Position.Right} className="!bg-green-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+const DenseNodeBase = ({ data }: NodeProps) => {
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-lg bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-300 dark:from-blue-950/30 dark:to-indigo-950/30 dark:border-blue-700 min-w-[180px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-blue-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-blue-500 to-indigo-500 rounded-md group-hover:scale-110 transition-transform">
+          <Box className="h-3 w-3 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-blue-800 dark:text-blue-300">{data.label}</div>
+          <div className="text-xs text-blue-600 dark:text-blue-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="space-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Units:</span>
+          <span className="font-medium text-blue-700 dark:text-blue-300">{data.units}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Activation:</span>
+          <span className="font-medium text-blue-700 dark:text-blue-300">{data.activation}</span>
+        </div>
+      </div>
+      
+      {/* Layer Visualization */}
+      <LayerVisualization 
+        units={data.units || 64} 
+        type={data.type} 
+        activation={data.activation} 
+      />
+      
+      <Handle type="source" position={Position.Right} className="!bg-blue-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+const Conv2DNodeBase = ({ data }: NodeProps) => {
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-md bg-gradient-to-br from-purple-50 to-violet-50 border-2 border-purple-300 dark:from-purple-950/30 dark:to-violet-950/30 dark:border-purple-700 min-w-[180px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-purple-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-purple-500 to-violet-500 rounded-md group-hover:scale-110 transition-transform">
+          <Hexagon className="h-3 w-3 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-purple-800 dark:text-purple-300">{data.label}</div>
+          <div className="text-xs text-purple-600 dark:text-purple-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="space-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Filters:</span>
+          <span className="font-medium text-purple-700 dark:text-purple-300">{data.units}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Kernel:</span>
+          <span className="font-medium text-purple-700 dark:text-purple-300">{data.kernelSize}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Activation:</span>
+          <span className="font-medium text-purple-700 dark:text-purple-300">{data.activation}</span>
+        </div>
+      </div>
+      
+      {/* Layer Visualization (for filters) */}
+      <LayerVisualization 
+        units={data.units || 32} 
+        type={data.type} 
+        activation={data.activation} 
+      />
+      
+      <Handle type="source" position={Position.Right} className="!bg-purple-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+const OutputNodeBase = ({ data }: NodeProps) => {
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-xl bg-gradient-to-br from-red-50 to-rose-50 border-4 border-double border-red-400 dark:from-red-950/30 dark:to-rose-950/30 dark:border-red-600 min-w-[180px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-red-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-red-500 to-rose-500 rounded-md group-hover:scale-110 transition-transform">
+          <Circle className="h-3 w-3 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-red-800 dark:text-red-300">{data.label}</div>
+          <div className="text-xs text-red-600 dark:text-red-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="space-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Units:</span>
+          <span className="font-medium text-red-700 dark:text-red-300">{data.units}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Activation:</span>
+          <span className="font-medium text-red-700 dark:text-red-300">{data.activation}</span>
+        </div>
+      </div>
+      
+      {/* Layer Visualization */}
+      <LayerVisualization 
+        units={data.units || 10} 
+        type={data.type} 
+        activation={data.activation} 
+      />
+      
+      <Handle type="source" position={Position.Right} className="!bg-red-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+// Other node components (similar modifications needed)
+const PoolingNodeBase = ({ data }: NodeProps) => {
+  const isMaxPooling = data.type === 'MaxPooling2D';
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-lg bg-gradient-to-br from-cyan-50 to-teal-50 border-2 border-cyan-300 dark:from-cyan-950/30 dark:to-teal-950/30 dark:border-cyan-700 min-w-[180px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-cyan-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-cyan-500 to-teal-500 rounded-md group-hover:scale-110 transition-transform">
+          <Triangle className="h-3 w-3 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-cyan-800 dark:text-cyan-300">{data.label}</div>
+          <div className="text-xs text-cyan-600 dark:text-cyan-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="space-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Type:</span>
+          <span className="font-medium text-cyan-700 dark:text-cyan-300">{isMaxPooling ? 'Max' : 'Avg'}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Pool Size:</span>
+          <span className="font-medium text-cyan-700 dark:text-cyan-300">{data.poolSize}</span>
+        </div>
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-cyan-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+const ActivationNodeBase = ({ data }: NodeProps) => {
+  const getIcon = (activation: string) => {
+    switch(activation) {
+      case 'relu': return 'Z';
+      case 'sigmoid': return 'S';
+      case 'tanh': return 'T';
+      case 'softmax': return 'SM';
+      default: return 'A';
+    }
+  }
+  
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-full bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-300 dark:from-amber-950/30 dark:to-orange-950/30 dark:border-amber-700 min-w-[160px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-amber-500 !w-3 !h-3" />
+      <div className="flex flex-col items-center mb-2">
+        <div className="p-2 bg-gradient-to-br from-amber-500 to-orange-500 rounded-full mb-1 group-hover:scale-110 transition-transform">
+          <span className="h-4 w-4 text-white font-bold text-xs flex items-center justify-center">
+            {getIcon(data.activation)}
+          </span>
+        </div>
+        <div className="text-center">
+          <div className="font-bold text-sm text-amber-800 dark:text-amber-300">{data.label}</div>
+          <div className="text-xs text-amber-600 dark:text-amber-400">{data.activation}</div>
+        </div>
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-amber-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+const DropoutNodeBase = ({ data }: NodeProps) => {
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-md bg-gradient-to-br from-rose-50 to-pink-50 border-2 border-rose-300 dark:from-rose-950/30 dark:to-pink-950/30 dark:border-rose-700 min-w-[180px] border-dashed group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-rose-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-rose-500 to-pink-500 rounded-md group-hover:scale-110 transition-transform">
+          <Octagon className="h-3 w-3 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-rose-800 dark:text-rose-300">{data.label}</div>
+          <div className="text-xs text-rose-600 dark:text-rose-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="space-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Rate:</span>
+          <span className="font-medium text-rose-700 dark:text-rose-300">{data.rate || '0.5'}</span>
+        </div>
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-rose-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+const LSTMNodeBase = ({ data }: NodeProps) => {
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-lg bg-gradient-to-br from-fuchsia-50 to-pink-50 border-2 border-fuchsia-300 dark:from-fuchsia-950/30 dark:to-pink-950/30 dark:border-fuchsia-700 min-w-[180px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-fuchsia-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-fuchsia-500 to-pink-500 rounded-md group-hover:scale-110 transition-transform">
+          <Diamond className="h-3 w-3 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-fuchsia-800 dark:text-fuchsia-300">{data.label}</div>
+          <div className="text-xs text-fuchsia-600 dark:text-fuchsia-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="space-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Units:</span>
+          <span className="font-medium text-fuchsia-700 dark:text-fuchsia-300">{data.units}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Activation:</span>
+          <span className="font-medium text-fuchsia-700 dark:text-fuchsia-300">{data.activation}</span>
+        </div>
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-fuchsia-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+const FlattenNodeBase = ({ data }: NodeProps) => {
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-sm bg-gradient-to-br from-gray-50 to-slate-50 border-2 border-gray-300 dark:from-gray-950/30 dark:to-slate-950/30 dark:border-gray-700 min-w-[180px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-gray-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-gray-500 to-slate-500 rounded-sm group-hover:scale-110 transition-transform">
+          <div className="h-3 w-3 flex flex-col justify-between">
+            <div className="h-[2px] w-full bg-white"></div>
+            <div className="h-[2px] w-full bg-white"></div>
+            <div className="h-[2px] w-full bg-white"></div>
+          </div>
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-gray-800 dark:text-gray-300">{data.label}</div>
+          <div className="text-xs text-gray-600 dark:text-gray-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="text-xs text-center text-gray-700 dark:text-gray-300 italic">
+        Flattens input
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-gray-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+const BatchNormNodeBase = ({ data }: NodeProps) => {
+  return (
+    <div className="px-4 py-3 shadow-lg rounded-md bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-300 dark:from-emerald-950/30 dark:to-green-950/30 dark:border-emerald-700 min-w-[180px] group hover:shadow-xl transition-all duration-200">
+      <Handle type="target" position={Position.Left} className="!bg-emerald-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 bg-gradient-to-br from-emerald-500 to-green-500 rounded-md group-hover:scale-110 transition-transform">
+          <div className="h-3 w-3 text-white font-bold text-xs flex items-center justify-center">BN</div>
+        </div>
+        <div className="flex-1">
+          <div className="font-bold text-sm text-emerald-800 dark:text-emerald-300">{data.label}</div>
+          <div className="text-xs text-emerald-600 dark:text-emerald-400">{data.layerName}</div>
+        </div>
+      </div>
+      <div className="text-xs text-center text-emerald-700 dark:text-emerald-300 italic">
+        Normalizes activations
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-emerald-500 !w-3 !h-3" />
+    </div>
+  )
+}
+
+// Wrap all node components with toolkit
+const InputNode = createNodeComponent(InputNodeBase)
+const DenseNode = createNodeComponent(DenseNodeBase)
+const Conv2DNode = createNodeComponent(Conv2DNodeBase)
+const PoolingNode = createNodeComponent(PoolingNodeBase)
+const ActivationNode = createNodeComponent(ActivationNodeBase)
+const DropoutNode = createNodeComponent(DropoutNodeBase)
+const OutputNode = createNodeComponent(OutputNodeBase)
+const LSTMNode = createNodeComponent(LSTMNodeBase)
+const FlattenNode = createNodeComponent(FlattenNodeBase)
+const BatchNormNode = createNodeComponent(BatchNormNodeBase)
+
+const nodeTypes = {
+  inputNode: InputNode,
+  denseNode: DenseNode,
+  conv2dNode: Conv2DNode,
+  poolingNode: PoolingNode,
+  activationNode: ActivationNode,
+  dropoutNode: DropoutNode,
+  outputNode: OutputNode,
+  lstmNode: LSTMNode,
+  flattenNode: FlattenNode,
+  batchNormNode: BatchNormNode,
+}
+
+const edgeTypes = {
+  sparkling: SparklingEdge,
+}
+
+// Horizontal layout nodes
 const initialNodes = [
   { 
     id: 'n1', 
-    position: { x: 0, y: 0 }, 
+    position: { x: 50, y: 300 }, 
+    type: 'inputNode',
     data: { 
       label: 'Input Layer',
       layerName: 'input_layer',
       type: 'Input',
-      units: 784,
+      units: 768, // Changed to 768 for demonstration
       activation: 'None',
       totalParams: 0,
       estimatedMemory: '0.1 MB',
@@ -34,48 +712,89 @@ const initialNodes = [
   },
   { 
     id: 'n2', 
-    position: { x: 0, y: 150 }, 
+    position: { x: 350, y: 300 }, 
+    type: 'denseNode',
     data: { 
       label: 'Dense Layer',
       layerName: 'dense_1',
       type: 'Dense',
-      units: 64,
+      units: 512,
       activation: 'relu',
-      totalParams: 50240,
-      estimatedMemory: '0.2 MB',
+      totalParams: 393728, // 768 * 512 + 512
+      estimatedMemory: '1.5 MB',
       status: 'Ready'
     } 
   },
   { 
     id: 'n3', 
-    position: { x: 0, y: 300 }, 
+    position: { x: 650, y: 300 }, 
+    type: 'denseNode',
     data: { 
-      label: 'Conv Layer',
-      layerName: 'conv_1',
-      type: 'Conv2D',
-      units: 32,
-      kernelSize: '3x3',
+      label: 'Dense Layer',
+      layerName: 'dense_2',
+      type: 'Dense',
+      units: 256,
       activation: 'relu',
-      totalParams: 320,
-      estimatedMemory: '0.15 MB',
+      totalParams: 131328, // 512 * 256 + 256
+      estimatedMemory: '0.5 MB',
+      status: 'Ready'
+    } 
+  },
+  { 
+    id: 'n4', 
+    position: { x: 950, y: 300 }, 
+    type: 'outputNode',
+    data: { 
+      label: 'Output Layer',
+      layerName: 'output_layer',
+      type: 'Output',
+      units: 10,
+      activation: 'softmax',
+      totalParams: 2570, // 256 * 10 + 10
+      estimatedMemory: '0.01 MB',
       status: 'Ready'
     } 
   },
 ]
 
 const initialEdges = [
-  { id: 'n1-n2', source: 'n1', target: 'n2' },
-  { id: 'n2-n3', source: 'n2', target: 'n3' }
+  { 
+    id: 'n1-n2', 
+    source: 'n1', 
+    target: 'n2',
+    type: 'sparkling',
+    animated: true,
+    style: { strokeWidth: 3 },
+  },
+  { 
+    id: 'n2-n3', 
+    source: 'n2', 
+    target: 'n3',
+    type: 'sparkling',
+    animated: true,
+    style: { strokeWidth: 3 },
+  },
+  { 
+    id: 'n3-n4', 
+    source: 'n3', 
+    target: 'n4',
+    type: 'sparkling',
+    animated: true,
+    style: { strokeWidth: 3 },
+  }
 ]
 
 export default function Page() {
   const [nodes, setNodes] = useState(initialNodes)
   const [edges, setEdges] = useState(initialEdges)
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true)
-  const [selectedNode, setSelectedNode] = useState(initialNodes[1])
+  const [selectedNode, setSelectedNode] = useState(initialNodes[0]) // Start with input node selected
   const [selectedEdge, setSelectedEdge] = useState(null)
   const [isTraining, setIsTraining] = useState(false)
-  const nodeIdCounter = useRef(4) // Start from 4 since we have 3 initial nodes
+  const [showAllToolkits, setShowAllToolkits] = useState(false)
+  const [connectionStyle, setConnectionStyle] = useState('sparkling')
+  const [viewMode, setViewMode] = useState<'horizontal' | 'compact'>('horizontal')
+  const nodeIdCounter = useRef(5)
 
   const onNodesChange = useCallback(
     (changes) => setNodes((nodesSnapshot) => applyNodeChanges(changes, nodesSnapshot)),
@@ -86,8 +805,13 @@ export default function Page() {
     [],
   )
   const onConnect = useCallback(
-    (params) => setEdges((edgesSnapshot) => addEdge(params, edgesSnapshot)),
-    [],
+    (params) => setEdges((edgesSnapshot) => addEdge({
+      ...params,
+      type: connectionStyle,
+      animated: true,
+      style: { strokeWidth: 3 },
+    }, edgesSnapshot)),
+    [connectionStyle]
   )
 
   const onNodeClick = useCallback((event, node) => {
@@ -96,20 +820,17 @@ export default function Page() {
     setIsRightSidebarOpen(true)
   }, [])
 
-  // Handle edge click to select it
   const onEdgeClick = useCallback((event, edge) => {
     event.stopPropagation()
     setSelectedEdge(edge)
     setSelectedNode(null)
   }, [])
 
-  // Handle pane click to deselect everything
   const onPaneClick = useCallback(() => {
     setSelectedEdge(null)
     setSelectedNode(null)
   }, [])
 
-  // Delete selected edge
   const handleDeleteEdge = useCallback(() => {
     if (selectedEdge) {
       setEdges(edges => edges.filter(edge => edge.id !== selectedEdge.id))
@@ -117,10 +838,8 @@ export default function Page() {
     }
   }, [selectedEdge])
 
-  // Delete selected node
   const handleDeleteNode = useCallback(() => {
     if (selectedNode) {
-      // Also delete connected edges
       setEdges(edges => edges.filter(edge => 
         edge.source !== selectedNode.id && edge.target !== selectedNode.id
       ))
@@ -130,19 +849,40 @@ export default function Page() {
     }
   }, [selectedNode])
 
-  // Function to add a new node when clicked from sidebar
+  const getNodeType = (nodeType: string) => {
+    switch(nodeType) {
+      case 'Input': return 'inputNode'
+      case 'Output': return 'outputNode'
+      case 'Dense': return 'denseNode'
+      case 'Conv2D': return 'conv2dNode'
+      case 'LSTM': return 'lstmNode'
+      case 'GRU': return 'lstmNode'
+      case 'ReLU':
+      case 'Sigmoid':
+      case 'Tanh':
+      case 'Softmax': return 'activationNode'
+      case 'Dropout': return 'dropoutNode'
+      case 'MaxPooling2D':
+      case 'AveragePooling2D': return 'poolingNode'
+      case 'BatchNormalization':
+      case 'LayerNormalization': return 'batchNormNode'
+      case 'Flatten': return 'flattenNode'
+      default: return 'denseNode'
+    }
+  }
+
   const handleAddNode = useCallback((nodeType: string, config: any) => {
     const newNodeId = `node-${nodeIdCounter.current++}`
-    
-    // Create a unique layer name based on type
     const layerCount = nodes.filter(n => n.data.type === nodeType).length
     const layerName = `${nodeType.toLowerCase()}_${layerCount + 1}`
+    const flowNodeType = getNodeType(nodeType)
     
     const newNode = {
       id: newNodeId,
+      type: flowNodeType,
       position: {
-        x: Math.random() * 400, // Random position within 400px
-        y: Math.random() * 400
+        x: Math.max(...nodes.map(n => n.position.x)) + 300,
+        y: 300
       },
       data: {
         label: config.label || nodeType,
@@ -165,7 +905,6 @@ export default function Page() {
     setIsRightSidebarOpen(true)
   }, [nodes])
 
-  // Handle drop from drag and drop
   const onDrop = useCallback(
     (event) => {
       event.preventDefault()
@@ -184,9 +923,11 @@ export default function Page() {
       const newNodeId = `node-${nodeIdCounter.current++}`
       const layerCount = nodes.filter(n => n.data.type === nodeType).length
       const layerName = `${nodeType.toLowerCase()}_${layerCount + 1}`
+      const flowNodeType = getNodeType(nodeType)
       
       const newNode = {
         id: newNodeId,
+        type: flowNodeType,
         position,
         data: {
           label: config.label || nodeType,
@@ -301,6 +1042,30 @@ export default function Page() {
     }))
   }, [selectedNode])
 
+  const handleDuplicateNode = useCallback(() => {
+    if (!selectedNode) return
+    
+    const newNodeId = `node-${nodeIdCounter.current++}`
+    const layerCount = nodes.filter(n => n.data.type === selectedNode.data.type).length
+    const layerName = `${selectedNode.data.type.toLowerCase()}_${layerCount + 1}`
+    
+    const newNode = {
+      ...selectedNode,
+      id: newNodeId,
+      position: {
+        x: selectedNode.xPos + 220,
+        y: selectedNode.yPos,
+      },
+      data: {
+        ...selectedNode.data,
+        layerName: layerName,
+      },
+    }
+    
+    setNodes(nds => [...nds, newNode])
+    setSelectedNode(newNode)
+  }, [selectedNode, nodes])
+
   const activationOptions = [
     { value: 'None', label: 'None' },
     { value: 'relu', label: 'ReLU' },
@@ -338,15 +1103,23 @@ export default function Page() {
     { value: 'Output', label: 'Output' },
   ]
 
+  const connectionStyleOptions = [
+    { value: 'sparkling', label: 'Sparkling', icon: <Sparkles className="h-3 w-3" /> },
+    { value: 'animated', label: 'Animated', icon: <Zap className="h-3 w-3" /> },
+    { value: 'solid', label: 'Solid', icon: <Link className="h-3 w-3" /> },
+  ]
+
+  const viewModeOptions = [
+    { value: 'horizontal', label: 'Horizontal', icon: <ArrowRight className="h-3 w-3" /> },
+    { value: 'compact', label: 'Compact', icon: <Layers className="h-3 w-3" /> },
+  ]
+
   return (
     <SidebarProvider>
-      {/* Left Sidebar */}
       <AppSidebar onAddNode={handleAddNode} />
       
-      {/* Main Content Area */}
       <div className="flex flex-1 min-h-0">
         <SidebarInset className="flex flex-col flex-1">
-          {/* Header */}
           <header className="flex h-16 items-center gap-4 px-4 border-b border-border bg-background">
             <SidebarTrigger className="flex-shrink-0" />
             <Separator orientation="vertical" className="h-6" />
@@ -360,11 +1133,60 @@ export default function Page() {
                 </span>
                 <Separator orientation="vertical" className="h-6" />
               </div>
-              
             </div>
 
-            {/* Action Buttons */}
             <div className="flex items-center gap-2">
+              <Select value={viewMode} onValueChange={setViewMode}>
+                <SelectTrigger className="w-40">
+                  <SelectValue placeholder="View Mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  {viewModeOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      <div className="flex items-center gap-2">
+                        {option.icon}
+                        {option.label}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Select value={connectionStyle} onValueChange={setConnectionStyle}>
+                <SelectTrigger className="w-32">
+                  <SelectValue placeholder="Connection Style" />
+                </SelectTrigger>
+                <SelectContent>
+                  {connectionStyleOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      <div className="flex items-center gap-2">
+                        {option.icon}
+                        {option.label}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAllToolkits(!showAllToolkits)}
+                className="gap-2"
+              >
+                {showAllToolkits ? (
+                  <>
+                    <EyeOff className="h-4 w-4" />
+                    Hide Toolkits
+                  </>
+                ) : (
+                  <>
+                    <Eye className="h-4 w-4" />
+                    Show Toolkits
+                  </>
+                )}
+              </Button>
+
               <Button
                 variant="outline"
                 size="sm"
@@ -394,7 +1216,6 @@ export default function Page() {
                 )}
               </Button>
 
-              {/* Right Sidebar toggle */}
               <Button
                 variant="outline"
                 size="sm"
@@ -416,7 +1237,6 @@ export default function Page() {
             </div>
           </header>
 
-          {/* Main content with ReactFlow */}
           <main className="flex-1 min-h-0 relative">
             <ReactFlow
               nodes={nodes}
@@ -432,12 +1252,13 @@ export default function Page() {
               edgesFocusable={true}
               edgesUpdatable={true}
               edgesSelectable={true}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
               fitView
               className="w-full h-full"
             >
               <Background color="#a6a6a6" variant={BackgroundVariant.Dots} gap={10} />
               
-              {/* Custom edge style for selected edges */}
               <style>
                 {`
                   .react-flow__edge.selected .react-flow__edge-path {
@@ -447,24 +1268,35 @@ export default function Page() {
                   .react-flow__edge.selected .react-flow__edge-interaction {
                     stroke: #ef4444 !important;
                   }
+                  .react-flow__node {
+                    cursor: pointer;
+                  }
+                  .react-flow__node:hover {
+                    filter: drop-shadow(0 4px 12px rgba(0,0,0,0.1));
+                  }
+                  .connection-flow {
+                    animation: flow 2s linear infinite;
+                  }
+                  @keyframes flow {
+                    0% { stroke-dashoffset: 0; }
+                    100% { stroke-dashoffset: 20; }
+                  }
                 `}
               </style>
               
-              {/* Drop Zone Instructions */}
-              <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-background/80 backdrop-blur-sm border border-border rounded-lg p-3 text-sm text-muted-foreground shadow-lg">
+              <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-background/80 backdrop-blur-sm border border-border rounded-lg p-3 text-sm text-muted-foreground shadow-lg">
                 <p className="flex items-center gap-2">
-                  <span>💡</span>
-                  <span>Click sidebar items to add nodes • Click arrows to delete them</span>
+                  <span>🏗️</span>
+                  <span>Horizontal Flow • Shows 768+ neurons in concatenated format • Click to expand visualization</span>
                 </p>
               </div>
 
-              {/* Edge deletion button (shown when an edge is selected) */}
               {selectedEdge && (
-                <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-background/80 backdrop-blur-sm border border-border rounded-lg p-3 shadow-lg">
+                <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-background/80 backdrop-blur-sm border border-border rounded-lg p-3 shadow-lg">
                   <div className="flex items-center gap-3">
                     <div className="flex items-center gap-2">
-                      <div className="h-3 w-3 bg-red-500 rounded-full animate-pulse"></div>
-                      <span className="font-medium">Edge Selected</span>
+                      <div className="h-3 w-3 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full animate-pulse"></div>
+                      <span className="font-medium">Connection Selected</span>
                     </div>
                     <Button
                       variant="destructive"
@@ -486,14 +1318,20 @@ export default function Page() {
                   </div>
                 </div>
               )}
+
+              {/* Global Toolkit Toggle Indicator */}
+              {showAllToolkits && (
+                <div className="absolute top-4 right-4 bg-gradient-to-r from-blue-500 to-purple-500 text-white px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2 shadow-lg">
+                  <Sparkles className="h-3 w-3" />
+                  Toolkits Enabled
+                </div>
+              )}
             </ReactFlow>
           </main>
         </SidebarInset>
 
-        {/* Right Sidebar - Properties Panel */}
         {isRightSidebarOpen && selectedNode && (
           <div className="w-96 border-l border-border bg-background flex flex-col">
-            {/* Right Sidebar Header */}
             <div className="h-16 flex items-center justify-between px-4 border-b border-border bg-gradient-to-r from-blue-50/50 to-purple-50/50 dark:from-blue-950/20 dark:to-purple-950/20">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-500 rounded-lg shadow-sm">
@@ -514,10 +1352,8 @@ export default function Page() {
               </Button>
             </div>
 
-            {/* Right Sidebar Content */}
             <div className="flex-1 overflow-y-auto p-6">
               <div className="space-y-8">
-                {/* Layer Name Section */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <Label htmlFor="layer-name" className="font-medium">Layer Name</Label>
@@ -536,14 +1372,12 @@ export default function Page() {
 
                 <Separator />
 
-                {/* Parameters Section */}
                 <div className="space-y-6">
                   <div className="flex items-center gap-2">
                     <div className="h-0.5 w-4 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full"></div>
                     <h4 className="font-medium text-lg">Parameters</h4>
                   </div>
                   
-                  {/* Layer Type Selection */}
                   <div className="space-y-2">
                     <Label htmlFor="layer-type">Layer Type</Label>
                     <Select 
@@ -561,6 +1395,10 @@ export default function Page() {
                                 option.value === 'Input' ? 'bg-green-500' :
                                 option.value === 'Dense' ? 'bg-blue-500' :
                                 option.value === 'Conv2D' ? 'bg-purple-500' :
+                                option.value === 'Output' ? 'bg-red-500' :
+                                option.value === 'Dropout' ? 'bg-rose-500' :
+                                option.value === 'MaxPooling2D' ? 'bg-cyan-500' :
+                                option.value === 'BatchNormalization' ? 'bg-emerald-500' :
                                 'bg-gray-500'
                               }`}></div>
                               {option.label}
@@ -571,7 +1409,6 @@ export default function Page() {
                     </Select>
                   </div>
 
-                  {/* Units/Neurons/Filters */}
                   {(selectedNode?.data?.type === 'Dense' || selectedNode?.data?.type === 'Conv2D' || 
                     selectedNode?.data?.type === 'LSTM' || selectedNode?.data?.type === 'GRU' ||
                     selectedNode?.data?.type === 'Input' || selectedNode?.data?.type === 'Output') && (
@@ -584,13 +1421,12 @@ export default function Page() {
                         type="number"
                         value={selectedNode?.data?.units || ''}
                         onChange={(e) => handleParameterChange('units', parseInt(e.target.value) || 0)}
-                        placeholder="64"
+                        placeholder="768"
                         className="border-blue-200 dark:border-blue-800 focus:border-blue-500 focus:ring-blue-500"
                       />
                     </div>
                   )}
 
-                  {/* Kernel Size (for Conv layers) */}
                   {selectedNode?.data?.type === 'Conv2D' && (
                     <div className="space-y-2">
                       <Label htmlFor="kernel-size">Kernel Size</Label>
@@ -612,7 +1448,6 @@ export default function Page() {
                     </div>
                   )}
 
-                  {/* Pool Size (for Pooling layers) */}
                   {(selectedNode?.data?.type === 'MaxPooling2D' || selectedNode?.data?.type === 'AveragePooling2D') && (
                     <div className="space-y-2">
                       <Label htmlFor="pool-size">Pool Size</Label>
@@ -626,7 +1461,6 @@ export default function Page() {
                     </div>
                   )}
 
-                  {/* Dropout Rate */}
                   {selectedNode?.data?.type === 'Dropout' && (
                     <div className="space-y-2">
                       <Label htmlFor="dropout-rate">Dropout Rate</Label>
@@ -644,7 +1478,6 @@ export default function Page() {
                     </div>
                   )}
 
-                  {/* Activation Function */}
                   {(selectedNode?.data?.type === 'Dense' || selectedNode?.data?.type === 'Conv2D' ||
                     selectedNode?.data?.type === 'LSTM' || selectedNode?.data?.type === 'GRU' ||
                     selectedNode?.data?.type === 'Output') && (
@@ -671,7 +1504,23 @@ export default function Page() {
 
                 <Separator />
 
-                {/* Model Summary Section */}
+                <div className="space-y-6">
+                  <div className="flex items-center gap-2">
+                    <div className="h-0.5 w-4 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full"></div>
+                    <h4 className="font-medium text-lg">Layer Visualization</h4>
+                  </div>
+                  
+                  <div className="p-4 bg-gradient-to-br from-blue-50/50 to-purple-50/50 dark:from-blue-950/10 dark:to-purple-950/10 rounded-lg border border-border">
+                    <LayerVisualization 
+                      units={selectedNode?.data?.units || 768} 
+                      type={selectedNode?.data?.type} 
+                      activation={selectedNode?.data?.activation} 
+                    />
+                  </div>
+                </div>
+
+                <Separator />
+
                 <div className="space-y-6">
                   <div className="flex items-center gap-2">
                     <div className="h-0.5 w-4 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full"></div>
@@ -722,17 +1571,14 @@ export default function Page() {
               </div>
             </div>
 
-            {/* Right Sidebar Footer */}
             <div className="p-4 border-t border-border bg-gradient-to-r from-blue-50/50 to-purple-50/50 dark:from-blue-950/20 dark:to-purple-950/20">
               <div className="flex gap-3">
                 <Button 
                   variant="outline" 
                   className="flex-1 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                  onClick={() => {
-                    // Duplicate node logic
-                    handleAddNode(selectedNode.data.type, selectedNode.data)
-                  }}
+                  onClick={handleDuplicateNode}
                 >
+                  <Copy className="h-4 w-4 mr-2" />
                   Duplicate Layer
                 </Button>
                 <Button 
@@ -740,11 +1586,12 @@ export default function Page() {
                   className="flex-1"
                   onClick={handleDeleteNode}
                 >
+                  <Trash2 className="h-4 w-4 mr-2" />
                   Remove Layer
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground mt-3 text-center">
-                Click arrows to select and delete connections
+                Horizontal layout • Shows 768+ neurons in concatenated format
               </p>
             </div>
           </div>
